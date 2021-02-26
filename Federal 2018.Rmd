@@ -1,0 +1,454 @@
+# Federal Government 2018 Salary SF
+
+## Loading the Libraries
+```{r}
+library(tidyverse)
+library(boot)
+library(outliers) #detect outliers
+library(qcc) # change detection (CUSUM)
+library(stringi)
+library(tm)
+library(Hmisc)
+library(tidyr)
+library(stringr)
+library(rvest)
+library(caret)
+library(caTools)
+library(MASS)
+library(lme4)
+library(gridExtra) #viewing multiple plots together
+library(tidytext) #text mining
+library(wordcloud2) #creative visualizations
+```
+
+## Reading the CSV File
+```{r}
+federal_2018 <- read_csv('./sf2018.csv')
+head(federal_2018)
+str(federal_2018)
+glimpse(federal_2018)
+```
+
+## Dropping the Unknown Names
+```{r}
+federal_2018 <- federal_2018[federal_2018$Name!="NAME WITHHELD BY AGENCY" & 
+               federal_2018$Name!="NAME WITHHELD BY OPM", ]
+### federal_2018 <- federal_2018[federal_2018$Location != "REDACTED"] ##That is 1,014,764 rows
+
+```
+## Seperating the name columns to first and last names
+```{r}
+federal_2018 <- federal_2018 %>%
+  separate(Name, c("Last Name", "First Name"))
+```
+## Cleaning up the currency format
+```{r}
+federal_2018 <- federal_2018 %>%
+  mutate_if(~any(str_detect(., '^\\$'), na.rm = TRUE),
+            ~as.numeric(str_replace_all(., '[$,]', '')))
+```
+## Combining the two columns into one as pay grade
+```{r}
+federal_2018 <- unite(federal_2018, "Pay Grade", c("Pay Plan", "Grade"), remove=FALSE)
+```
+## View the dataset again
+```{r}
+head(federal_2018)
+str(federal_2018)
+glimpse(federal_2018)
+```
+## Dropping variables to eliminate redundancy, unneeded columns, and privacy concerns
+```{r}
+federal_2018 <- subset(federal_2018, select = -c(Bonus, FY, `Pay Plan`, Location, `Last Name`))
+```
+
+## View the dataset again
+```{r}
+head(federal_2018)
+str(federal_2018)
+glimpse(federal_2018)
+summary(federal_2018)
+```
+## Descriptive statistics of federal employees
+```{r}
+as.numeric(mean(federal_2018$Salary, na.rm=TRUE))
+as.numeric(median(federal_2018$Salary, na.rm = TRUE))
+as.numeric(var(federal_2018$Salary, na.rm = TRUE))
+as.numeric(sd(federal_2018$Salary))
+as.numeric(min(federal_2018$Salary))
+as.numeric(max(federal_2018$Salary))
+```
+From looking at the descriptive statistics for the federal government employees, the average salary in San Francisco is $109,465.80, while the median there is $109251. According to the Paysa database, the salary is $121,695 (Paysa, 2019).Ranges can vary from $0 to $331,175. 
+
+
+## Looking for employees who make over $200k
+```{r}
+sf_over200 <- federal_2018 %>%
+  arrange(desc(Salary))%>%
+  filter(Salary > 200000)
+```
+```{r}
+view(sf_over200)
+count(sf_over200)
+```
+
+There are 247 employees in the San Francisco Federal Government sector that are paid over $200k/year.
+
+## Sample Mean
+```{r}
+sal.mean = with(federal_2018, mean(Salary))
+sal.mean
+```
+## Bootstrap
+```{r}
+B = 1000
+n = nrow(federal_2018)
+boot.samples = matrix(sample(federal_2018$Salary, size = B * n, replace = TRUE),
+                      B, n)
+boot.statistics = apply(boot.samples, 1, mean)
+```
+## Density Plot for Federal Gov't Salaries
+```{r}
+ggplot(data.frame(meanTime = boot.statistics),aes(x=meanTime)) +
+  geom_histogram(binwidth=0.25,aes(y=..density..)) +
+  geom_density(color="red")
+```
+The average range for the salaries are hovering in the lines of $108,000 to $110,000 for the federal government employees. 
+
+## Standard Deviation of Error
+```{r}
+sal.se = sd(boot.statistics)
+sal.se
+```
+## Confidence Interval
+```{r}
+me = ceiling(10 * 2 * sal.se)/10
+round(sal.mean, 1) + c(-1, 1) * me
+```
+
+## Function for Bootstrap
+
+```{r}
+boot.mean = function(x,B,binwidth=NULL) {
+n = length(x)
+boot.samples = matrix( sample(x,size=n*B,replace=TRUE), B, n)
+boot.statistics = apply(boot.samples,1,mean)
+se = sd(boot.statistics)
+if ( is.null(binwidth) )
+binwidth = diff(range(boot.statistics))/30
+p = ggplot(data.frame(x=boot.statistics),aes(x=x)) +
+geom_histogram(aes(y=..density..),binwidth=binwidth) + geom_density(color="red")
+plot(p)
+interval = mean(x) + c(-1,1)*2*se
+print( interval )
+return( list(boot.statistics = boot.statistics, interval=interval, se=se, plot=p) )
+}
+```
+
+## Salary Distribution Round 2
+
+```{r}
+out = with(federal_2018, boot.mean(Salary, B = 1000))
+out$interval
+```
+## For Loop Version
+
+```{r}
+n = length(federal_2018$Salary)
+B = 1000
+result = rep(NA, B)
+for (i in 1:B) {
+boot.sample = sample(n, replace = TRUE)
+result[i] = mean(federal_2018$Salary[boot.sample])
+}
+with(federal_2018, mean(Salary) + c(-1, 1) * 2 * sd(result))
+```
+Some slight variation, although the ranges still come close to its estimate. 
+
+## Difference in Means
+```{r}
+with(federal_2018, summary(Salary))
+```
+## Using the Boot Package Version
+```{r}
+my.mean = function(x, indices) {
+return( mean( x[indices] ) )
+}
+salry.boot = boot(federal_2018$Salary, my.mean, 10000)
+salry.boot
+```
+## Confidence Interval
+```{r}
+boot.ci(salry.boot)
+```
+## Z-Score
+```{r}
+fed18_zscore <- (federal_2018$Salary - mean(federal_2018$Salary))/sd(federal_2018$Salary)
+head(fed18_zscore, 25)
+```
+## One Sample T-Test Federal Government
+```{r}
+set.seed(254)
+federal18sf_t.test <- t.test(federal_2018$Salary)
+federal18sf_t.test
+```
+## Calculating the Chi-Square Test
+
+```{r}
+chi_salary <-federal_2018$Salary
+chi_grade <- federal_2018$Grade
+table(chi_salary, chi_grade)
+chisq.test(chi_salary, chi_grade)
+```
+
+From the contingency table that is created for all the different salaries, the salary for chi-square test determined to be 272287.66, p-value at 0.0, and degrees of freedom at 62909. This statistic isn't exactly realistic, which we can reject the null hypothesis.
+
+## QQ Norm Plot
+```{r}
+qqnorm(federal_2018$Salary)
+```
+## Scaled Version
+
+```{r}
+qqnorm(scale(federal_2018$Salary))
+```
+
+## Grubbs Test
+```{r}
+salary_grubbs <- grubbs.test(federal_2018$Salary, type = 11) # two opposite outliers
+salary_grubbs
+
+salary_grubbs2 <- grubbs.test(federal_2018$Salary, type = 10) # one opposite outlier
+salary_grubbs2
+```
+## Grubbs Test Visualization
+```{r}
+## Creating for the Quantile Function
+percentile <- function(t){
+probs <- quantile(t, probs = c(0.05, 0.25, 0.5, 0.75, 0.95))
+names(probs) <- c("ymin", "lower", "middle", "upper", "ymax")
+probs
+}
+```
+
+## Salary dataframe
+```{r}
+grubbs_sfsalary <- data.frame(x = rep(1, nrow(federal_2018)), y = federal_2018$Salary)
+```
+
+## Outliers Function 
+```{r}
+dist <- function(t){
+subset(t, t < quantile(t, 0.05)| quantile(t, 0.95) < t)
+}
+```
+
+## Boxplot
+```{r}
+ggplot(grubbs_sfsalary, aes(x, y))+ 
+  stat_summary(fun.data = percentile, geom = "boxplot") + 
+  stat_summary(fun.y = dist, geom = "point")
+```
+
+After constructing the boxplot, it has shown that there are many outliers within the
+dataset. It has been identified that the "type-10" parameter is the best approach by
+having fewer outliers when utilized with additional parameters. With the "type-11"
+parameter, there are many more outliers in the data. With the opposite version on the
+Grubbs Test, it is also the same theory as before with the 2nd and 3rd parts of the
+analysis where we would fail to reject the null hypothesis as the p-value is greater
+than 0.05.
+
+## Color Template
+```{r}
+my_colors <- c("#E69F00", "#56B4E9", "#009E73", "#CC79A7", "#D55E00")
+```
+## Most common job titles in the Federal Government in SF
+```{r}
+federal_2018 %>%
+  count(Occupation, sort = TRUE) %>%
+  top_n(20) %>%
+  ungroup() %>%
+  mutate(Occupation = reorder(Occupation, n)) %>%
+  ggplot() +
+  geom_col(aes(Occupation, n), fill = my_colors[4]) +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank()) +
+  xlab("") + 
+  ylab("Title Count") +
+  ggtitle("Most Common Roles for Federal Government in SF") +
+  coord_flip()
+```
+## Generating the Wordcloud
+```{r}
+fg_wordcounts <- federal_2018 %>%
+  count(Occupation, sort = TRUE) 
+```
+
+```{r}
+wordcloud2(fg_wordcounts[1:100, ], size = .75)
+```
+
+From looking at the analysis of the most common jobs, nursing is the top one. The important context of it shows that there will be a need to have more nurses in the future as the population gets older. They are the critical component for healthcare and the largest for the health profession (Haddad & Toney-Butler, 2019). The numbers according to the Bureau of Labor in Statistics show that there will be 11 million nurses that will be needed in the next decade from 2012. Currently, there has been many job postings in various job boards that are hiring for nurses if anyone wants to get into the healthcare profession in any setting as shown in the wordcloud. 
+
+
+## Most Common Agency in the Federal Government in SF
+```{r}
+federal_2018 %>%
+  count(Agency, sort = TRUE) %>%
+  top_n(20) %>%
+  ungroup() %>%
+  mutate(Agency = reorder(Agency, n)) %>%
+  ggplot() +
+  geom_col(aes(Agency, n), fill = my_colors[1]) +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank()) +
+  xlab("") + 
+  ylab("Title Count") +
+  ggtitle("Most Common Agencies for Federal Government in SF") +
+  coord_flip()
+```
+## Generating the Wordcloud
+```{r}
+agency_wordcounts <- federal_2018 %>%
+  count(Agency, sort = TRUE) 
+```
+
+```{r}
+wordcloud2(agency_wordcounts[1:18, ], size = 1.5)
+```
+
+## Only Looking at IRS Sector
+```{r}
+irs_2018 <- federal_2018 %>%
+  filter(Agency == "INTERNAL REVENUE SERVICE")
+```
+## Checking the variables again and viewing the data only for IRS Employees
+```{r}
+head(irs_2018)
+str(irs_2018)
+glimpse(irs_2018)
+view(irs_2018)
+```
+## Filtering to Certain positions to do distributions
+```{r}
+economist_pos <- irs_2018 %>%
+  filter(Occupation == "ECONOMIST")
+economist_pos
+```
+
+```{r}
+senior_pos <- irs_2018 %>%
+  filter(Occupation == "SENIOR ECONOMIST")
+senior_pos
+```
+
+## Histogram of all distributions on pay grade
+```{r}
+ggplot(irs_2018, aes(`Pay Grade`)) + 
+  geom_histogram(color = "red",bg="blue" ,stat='count') + 
+  ggtitle("Distributions of Pay Grades") 
+```
+
+## Histogram of all distributions on salary
+
+```{r}
+ggplot(irs_2018, aes(Salary)) + 
+  geom_histogram(color = "darkblue",bg="orange", stat='count') + 
+  ggtitle("Distributions of Salary") 
+```
+
+## Scatterplot of all incomes based on income
+
+```{r}
+ggplot(irs_2018, aes(`Pay Grade`, Salary)) + 
+  geom_point(color="darkred") + ggtitle("Pay Grade Distribution")
+```
+
+## Linear Regression
+
+```{r}
+irs_2018.mod <- lm(Salary ~ `Pay Grade`, # regression formula
+                   data=irs_2018) # data set
+```
+## Summarize and print the results
+
+```{r}
+summary(irs_2018.mod) # show regression coefficients table
+```
+
+## Assoication with the two variables
+
+```{r}
+summary(lm(Salary ~ `Pay Grade`, data = irs_2018))
+```
+## Logistic Regression Model
+
+```{r}
+irs_lr1 <-lmer(Salary ~ 1 + (1|`Pay Grade`),
+               data=irs_2018, REML = FALSE)
+```
+
+
+```{r}
+summary(irs_lr1)
+```
+
+## One Sample T-test
+```{r}
+set.seed(510)
+irs18sf_t.test <- t.test(irs_2018$Salary)
+irs18sf_t.test
+```
+
+
+## Chi-Square Test on the IRS Sector
+```{r}
+chi_salary <-irs_2018$Salary
+chi_grade <- irs_2018$Grade
+table(chi_salary, chi_grade)
+chisq.test(chi_salary, chi_grade)
+```
+
+## Looking at the most common roles in the IRS
+
+```{r}
+irs_2018 %>%
+  count(Occupation, sort = TRUE) %>%
+  top_n(20) %>%
+  ungroup() %>%
+  mutate(Occupation = reorder(Occupation, n)) %>%
+  ggplot() +
+  geom_col(aes(Occupation, n), fill = my_colors[3]) +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank()) +
+  xlab("") + 
+  ylab("Title Count") +
+  ggtitle("Most Common Roles for IRS") +
+  coord_flip()
+```
+
+## Generating the Wordcloud
+
+```{r}
+irs_wordcounts <- irs_2018 %>%
+  count(Occupation, sort = TRUE) 
+```
+
+```{r}
+wordcloud2(irs_wordcounts[1:30, ], size = .75)
+```
+
+
+References:
+
+Haddad, L.M. & Toney-Butler, T.J. (2019, Nov. 12). "Nursing Shortage - StatPearls - NCBI Bookshelf." NCBI. Retrieved from https://www.ncbi.nlm.nih.gov/books/NBK493175/
+
+Paysa.(2019). *Salaries in San Francisco, CA*. Retrieved from https://www.paysa.com/salaries/san-francisco,-ca--l
+
+"Table 8. Occupations with the largest projected number of job openings due to growth and replacement needs, 2012 and projected 2022. (2012)." U.S. Bureau of Labor Statistics. Retrieved from https://www.bls.gov/news.release/ecopro.t08.htm
+
+
+
